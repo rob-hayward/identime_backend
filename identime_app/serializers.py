@@ -22,10 +22,12 @@ class AuthenticationChallengeSerializer(serializers.Serializer):
 
 
 class AuthenticationResponseSerializer(serializers.Serializer):
-    # The structure of this serializer should match the JSON structure of the response you expect from the client
     credential_id = serializers.CharField()
     authenticator_data = serializers.CharField()
     client_data_json = serializers.CharField()
     signature = serializers.CharField()
-    user_handle = serializers.CharField(required=False)  # Optional, based on your setup
-    # Add any other fields as per the response structure
+    user_handle = serializers.CharField(required=False)  # Optional
+    raw_id = serializers.CharField()  # Add this line to include raw_id
+
+
+
