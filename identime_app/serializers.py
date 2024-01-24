@@ -22,12 +22,16 @@ class AuthenticationChallengeSerializer(serializers.Serializer):
 
 
 class AuthenticationResponseSerializer(serializers.Serializer):
-    credential_id = serializers.CharField()
-    authenticator_data = serializers.CharField()
-    client_data_json = serializers.CharField()
-    signature = serializers.CharField()
-    user_handle = serializers.CharField(required=False)  # Optional
-    raw_id = serializers.CharField()  # Add this line to include raw_id
+    credential_id = serializers.CharField(max_length=200)  # Adjust max_length as needed
+    authenticator_data = serializers.CharField(max_length=1024)  # Example length
+    client_data_json = serializers.CharField(max_length=1024)  # Example length
+    signature = serializers.CharField(max_length=1024)  # Example length
+    user_handle = serializers.CharField(required=False, max_length=200)  # Optional, adjust max_length as needed
+    raw_id = serializers.CharField(max_length=200)  # Adjust max_length as needed
+    type = serializers.CharField(max_length=100)  # New field for type
 
+    def validate_credential_id(self, value):
+        # Add custom validation logic for credential_id if needed
+        return value
 
-
+    # Add other validate_<field_name> methods for custom field validation
