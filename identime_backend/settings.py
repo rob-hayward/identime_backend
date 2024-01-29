@@ -135,6 +135,18 @@ LOGGING = {
     },
 }
 
+CSRF_TRUSTED_ORIGINS = ['http://localhost:3000']
+
+# Email configuration for development
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+# Email configuration for production (example using SMTP)
+# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+# EMAIL_HOST = 'smtp.your-email-provider.com'
+# EMAIL_PORT = 587
+# EMAIL_USE_TLS = True
+# EMAIL_HOST_USER = 'your-email-address'
+# EMAIL_HOST_PASSWORD = 'your-email-password'
 
 # Internationalization
 # https://docs.djangoproject.com/en/4.2/topics/i18n/

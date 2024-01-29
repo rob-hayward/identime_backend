@@ -25,7 +25,7 @@ from webauthn.helpers.structs import PublicKeyCredentialDescriptor
 from webauthn.helpers.bytes_to_base64url import bytes_to_base64url
 
 from .serializers import AuthenticationResponseSerializer
-from .models import WebAuthnCredential
+from .models import WebAuthnCredential, UserProfile
 
 logger = logging.getLogger(__name__)
 
@@ -39,39 +39,76 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication
 
+from django.core.mail import send_mail
+from .models import EmailVerificationToken
+from django.contrib.auth.models import User
 
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def simple_register(request):
+
+def send_verification_email(request):
     try:
-        username = request.data.get('username')
-        password = request.data.get('password')
-        if not username or not password:
-            return Response({'error': 'Username and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        data = JSONParser().parse(request)
+        email = data.get('email')
+        preferred_name = data.get('preferredName')
 
-        user = User.objects.create_user(username=username, password=password)
-        return Response({'status': 'success', 'message': 'User registered successfully.'})
+        # Retrieve or create the user instance
+        user, created = User.objects.get_or_create(email=email, defaults={'username': email})
+        if created:
+            user.set_password(User.objects.make_random_password())
+            user.save()
 
+        # Log user creation
+        if created:
+            logger.info(f"Created new user: {user.username}")
+
+        # Create or update the UserProfile instance
+        user_profile, profile_created = UserProfile.objects.get_or_create(user=user, defaults={'preferred_name': preferred_name})
+        if not profile_created:
+            user_profile.preferred_name = preferred_name
+            user_profile.save()
+
+        # Log profile creation or update
+        logger.info(f"User profile created/updated for: {user.username}")
+
+        # Create a new verification token
+        token = EmailVerificationToken.objects.create(user=user)
+        verification_link = f"http://localhost:3000/verify-email/{token.token}"
+        email_subject = "Email Verification"
+        email_body = f"Hi {preferred_name},\nPlease verify your email by clicking on this link: {verification_link}"
+
+        send_mail(email_subject, email_body, 'from@example.com', [email], fail_silently=False)
+        return JsonResponse({'status': 'success', 'detail': 'Verification email sent'})
     except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        logger.error(f"Error in send_verification_email: {e}")
+        return JsonResponse({'error': str(e)}, status=500)
 
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def simple_login(request):
-    username = request.data.get('username')
-    password = request.data.get('password')
-    user = authenticate(request, username=username, password=password)
-    if user is not None:
-        login(request, user)
-        return Response({'status': 'success', 'message': 'Login successful.'})
-    else:
-        return Response({'error': 'Invalid credentials.'}, status=status.HTTP_401_UNAUTHORIZED)
 
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def simple_logout(request):
-    logout(request)
-    return Response({'status': 'success', 'message': 'Logged out successfully.'})
+from .models import EmailVerificationToken
+from django.http import HttpResponse
+
+
+def verify_email(request, token):
+    try:
+        verification_record = EmailVerificationToken.objects.get(token=token)
+        user = verification_record.user
+        user.is_active = True
+        user.save()
+
+        # Assuming you create a UserProfile instance for each user
+        user_profile = UserProfile.objects.get(user=user)
+
+        # Log email verification success
+        logger.info(f"Email verified for user: {user.username}")
+
+        return JsonResponse({'status': 'success', 'email': user.email, 'preferredName': user_profile.preferred_name})
+    except EmailVerificationToken.DoesNotExist:
+        logger.warning(f"Email verification failed: Token does not exist (token: {token})")
+        return JsonResponse({'error': 'Invalid or expired token.'}, status=400)
+    except UserProfile.DoesNotExist:
+        logger.warning(f"Email verification failed: UserProfile does not exist for user associated with token {token}")
+        return JsonResponse({'error': 'User profile not found.'}, status=404)
+    except Exception as e:
+        logger.error(f"Error in verify_email: {e}")
+        return JsonResponse({'error': str(e)}, status=500)
 
 
 class RegistrationChallengeView(APIView):
@@ -310,7 +347,7 @@ class AuthenticationResponseView(APIView):
 
 
 class LogoutView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def post(self, request):
         logout(request)
