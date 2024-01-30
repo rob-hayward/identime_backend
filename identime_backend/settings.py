@@ -64,8 +64,8 @@ WSGI_APPLICATION = 'identime_backend.wsgi.application'
 
 
 # WebAuthn settings
-WEBAUTHN_RP_ID = 'localhost'  # Adjust as per your deployment (e.g., your domain name)
-WEBAUTHN_RP_NAME = 'Example Corp'  # Name of your application or organization
+WEBAUTHN_RP_ID = 'localhost'
+WEBAUTHN_RP_NAME = 'Example Corp'
 WEBAUTHN_ORIGIN = 'http://localhost:3000'
 
 # CORS settings
@@ -113,7 +113,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
-        # You can customize permissions as needed
+        # customize permissions as needed
     ],
 }
 
@@ -137,16 +137,16 @@ LOGGING = {
 
 CSRF_TRUSTED_ORIGINS = ['http://localhost:3000']
 
-# Email configuration for development
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+# Email configuration for testing
+# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
-# Email configuration for production (example using SMTP)
-# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-# EMAIL_HOST = 'smtp.your-email-provider.com'
-# EMAIL_PORT = 587
-# EMAIL_USE_TLS = True
-# EMAIL_HOST_USER = 'your-email-address'
-# EMAIL_HOST_PASSWORD = 'your-email-password'
+# Email configuration for production testing with Mailtrap
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'sandbox.smtp.mailtrap.io'
+EMAIL_HOST_USER = '8ec705afee3563'  # Mailtrap username
+EMAIL_HOST_PASSWORD = '0b2c98d7917c4f'  # Mailtrap password
+EMAIL_PORT = '2525'
+EMAIL_USE_TLS = True  # Optional, based on preference for TLS
 
 # Internationalization
 # https://docs.djangoproject.com/en/4.2/topics/i18n/

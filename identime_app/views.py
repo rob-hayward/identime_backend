@@ -1,17 +1,17 @@
-# views.py
-import base64
-import binascii
-import json
-import logging
+# identime_app/views.py
 
+import base64
+import json
 from django.http import JsonResponse
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.contrib.auth import login, logout
 from rest_framework.views import APIView
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.parsers import JSONParser
+from django.core.mail import send_mail
 
+# WebAuthn related imports
 from webauthn import (
     generate_registration_options,
     generate_authentication_options,
@@ -20,70 +20,38 @@ from webauthn import (
     verify_authentication_response,
     base64url_to_bytes,
 )
+from webauthn.helpers import bytes_to_base64url
 from webauthn.helpers.exceptions import InvalidAuthenticationResponse
 from webauthn.helpers.structs import PublicKeyCredentialDescriptor
-from webauthn.helpers.bytes_to_base64url import bytes_to_base64url
 
+# Local app imports
 from .serializers import AuthenticationResponseSerializer
-from .models import WebAuthnCredential, UserProfile
-
-logger = logging.getLogger(__name__)
-
-
-from django.contrib.auth.models import User
-from django.contrib.auth import authenticate, login, logout
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
-from rest_framework.authentication import SessionAuthentication, BasicAuthentication
-
-from django.core.mail import send_mail
-from .models import EmailVerificationToken
-from django.contrib.auth.models import User
+from .models import WebAuthnCredential, UserProfile, EmailVerificationToken
 
 
 def send_verification_email(request):
-    try:
-        data = JSONParser().parse(request)
-        email = data.get('email')
-        preferred_name = data.get('preferredName')
+    data = JSONParser().parse(request)
+    email = data.get('email')
+    preferred_name = data.get('preferredName')
 
-        # Retrieve or create the user instance
-        user, created = User.objects.get_or_create(email=email, defaults={'username': email})
-        if created:
-            user.set_password(User.objects.make_random_password())
-            user.save()
+    user, created = User.objects.get_or_create(email=email, defaults={'username': email})
+    if created:
+        user.set_password(User.objects.make_random_password())
+        user.save()
 
-        # Log user creation
-        if created:
-            logger.info(f"Created new user: {user.username}")
+    user_profile, profile_created = UserProfile.objects.get_or_create(
+        user=user, defaults={'preferred_name': preferred_name})
+    if not profile_created:
+        user_profile.preferred_name = preferred_name
+        user_profile.save()
 
-        # Create or update the UserProfile instance
-        user_profile, profile_created = UserProfile.objects.get_or_create(user=user, defaults={'preferred_name': preferred_name})
-        if not profile_created:
-            user_profile.preferred_name = preferred_name
-            user_profile.save()
+    token = EmailVerificationToken.objects.create(user=user)
+    verification_link = f"http://localhost:3000/verify-email/{token.token}"
+    email_subject = "Email Verification"
+    email_body = f"Hi {preferred_name},\nPlease verify your email by clicking on this link: {verification_link}"
 
-        # Log profile creation or update
-        logger.info(f"User profile created/updated for: {user.username}")
-
-        # Create a new verification token
-        token = EmailVerificationToken.objects.create(user=user)
-        verification_link = f"http://localhost:3000/verify-email/{token.token}"
-        email_subject = "Email Verification"
-        email_body = f"Hi {preferred_name},\nPlease verify your email by clicking on this link: {verification_link}"
-
-        send_mail(email_subject, email_body, 'from@example.com', [email], fail_silently=False)
-        return JsonResponse({'status': 'success', 'detail': 'Verification email sent'})
-    except Exception as e:
-        logger.error(f"Error in send_verification_email: {e}")
-        return JsonResponse({'error': str(e)}, status=500)
-
-
-from .models import EmailVerificationToken
-from django.http import HttpResponse
+    send_mail(email_subject, email_body, 'from@example.com', [email], fail_silently=False)
+    return JsonResponse({'status': 'success', 'detail': 'Verification email sent'})
 
 
 def verify_email(request, token):
@@ -93,21 +61,14 @@ def verify_email(request, token):
         user.is_active = True
         user.save()
 
-        # Assuming you create a UserProfile instance for each user
         user_profile = UserProfile.objects.get(user=user)
-
-        # Log email verification success
-        logger.info(f"Email verified for user: {user.username}")
 
         return JsonResponse({'status': 'success', 'email': user.email, 'preferredName': user_profile.preferred_name})
     except EmailVerificationToken.DoesNotExist:
-        logger.warning(f"Email verification failed: Token does not exist (token: {token})")
         return JsonResponse({'error': 'Invalid or expired token.'}, status=400)
     except UserProfile.DoesNotExist:
-        logger.warning(f"Email verification failed: UserProfile does not exist for user associated with token {token}")
         return JsonResponse({'error': 'User profile not found.'}, status=404)
     except Exception as e:
-        logger.error(f"Error in verify_email: {e}")
         return JsonResponse({'error': str(e)}, status=500)
 
 
@@ -115,77 +76,75 @@ class RegistrationChallengeView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request, *args, **kwargs):
+        # Parsing the request data.
         data = JSONParser().parse(request)
         username = data.get('username')
 
+        # Error handling if username is not provided.
         if not username:
             return JsonResponse({'detail': 'Username is required'}, status=400)
 
-        # Generate registration options
+        # Generating registration options using webauthn library.
         registration_options = generate_registration_options(
             rp_id=settings.WEBAUTHN_RP_ID,
             rp_name=settings.WEBAUTHN_RP_NAME,
-            user_id=username,  # Using the provided username as the user ID
+            user_id=username,
             user_name=username,
-            user_display_name=username,  # You can modify this as needed
-            # Include other options as needed
+            user_display_name=username,
         )
 
-        # Convert challenge to Base64 string for storing in the session
+        # Storing the challenge and username in the session.
         challenge_base64 = base64.b64encode(registration_options.challenge).decode('utf-8')
-        logger.info(f"Challenge sent: {challenge_base64}")
         request.session['webauthn_challenge'] = challenge_base64
         request.session['webauthn_username'] = username
         request.session.save()
-        logger.debug(f"Session Key after challenge set: {request.session.session_key}")
 
-        # Convert options to JSON
+        # Returning registration options as JSON response.
         registration_options_dict = json.loads(options_to_json(registration_options))
-
-        # Return the JSON response
         return JsonResponse(registration_options_dict)
 
 
 class RegistrationResponseView(APIView):
+    # Allow access to this view without authentication
     permission_classes = [AllowAny]
 
     def post(self, request, *args, **kwargs):
+        # Retrieving the response data sent by the client
         response_data = request.data
+
+        # Extracting the challenge and username from the session
         challenge_base64 = request.session.pop('webauthn_challenge', None)
         username = request.session.pop('webauthn_username', None)
-        logger.info(f"Challenge expected: {challenge_base64}")
-        logger.info(f"Username retrieved: {username}")
+
+        # Decoding the challenge if available
         challenge = base64.b64decode(challenge_base64) if challenge_base64 else None
 
+        # Handling the case where username is not found in the session
         if not username:
-            logger.error("Username not found in session")
             return JsonResponse({'detail': 'Username not found'}, status=400)
 
         try:
-            # Verify the registration response
+            # Verifying the registration response using the WebAuthn library
             registration_verification = verify_registration_response(
                 credential=response_data,
                 expected_challenge=challenge,
                 expected_origin=settings.WEBAUTHN_ORIGIN,
                 expected_rp_id=settings.WEBAUTHN_RP_ID,
-                # ... other parameters ...
+                # Include other necessary parameters here
             )
 
-            # Check if the user already exists and has WebAuthn credentials
+            # Handling the case where the user already has WebAuthn credentials
             user = User.objects.filter(username=username).first()
             if user and WebAuthnCredential.objects.filter(user=user).exists():
                 return JsonResponse({'detail': 'User already registered with WebAuthn'}, status=400)
 
-            # Create the user if it does not exist
+            # Creating a new user if it does not exist
             if not user:
                 user = User.objects.create(username=username)
                 user.set_password(User.objects.make_random_password())
                 user.save()
-                logger.info(f"New user created: {user.username} (ID: {user.id})")
-            else:
-                logger.info(f"Existing user retrieved: {user.username} (ID: {user.id})")
 
-            # Create WebAuthn credentials for the user
+            # Creating WebAuthn credentials for the user
             WebAuthnCredential.objects.create(
                 user=user,
                 credential_id=registration_verification.credential_id,
@@ -193,31 +152,34 @@ class RegistrationResponseView(APIView):
                 sign_count=0
             )
 
-            logger.info(f"Stored credential_id (raw_id) in database: Type: {type(registration_verification.credential_id)}, Value: {registration_verification.credential_id}")
-
-            # Log the user in
+            # Logging the user in
             login(request, user)
             return JsonResponse({"status": "success"})
 
+        # Handling exceptions and returning an error response
         except Exception as e:
-            logger.error(f"Registration error: {e}")
             return JsonResponse({"status": "error", "detail": str(e)}, status=400)
 
 
 class AuthenticationChallengeView(APIView):
+    # Allow any user to access this view
     permission_classes = [AllowAny]
 
     def post(self, request, *args, **kwargs):
+        # Parsing the JSON data from the request
         data = JSONParser().parse(request)
         username = data.get('username')
 
+        # Validating the presence of a username
         if not username:
             return JsonResponse({'detail': 'Username is required'}, status=400)
 
         try:
+            # Fetching the user and their stored WebAuthn credentials
             user = User.objects.get(username=username)
             stored_credentials = WebAuthnCredential.objects.filter(user=user)
 
+            # Preparing credentials for the authentication challenge
             if stored_credentials.exists():
                 allowed_credentials = [
                     PublicKeyCredentialDescriptor(
@@ -226,60 +188,56 @@ class AuthenticationChallengeView(APIView):
                     ) for cred in stored_credentials
                 ]
             else:
+                # Handling case where no credentials are found
                 return JsonResponse({'detail': 'No credentials found'}, status=404)
 
         except User.DoesNotExist:
+            # Handling case where user does not exist
             return JsonResponse({'detail': 'User not found'}, status=404)
 
+        # Generating authentication options for the challenge
         authentication_options = generate_authentication_options(
             rp_id=settings.WEBAUTHN_RP_ID,
             allow_credentials=allowed_credentials,
-            # Other parameters as needed
+            # Add other required parameters here
         )
 
+        # Storing the challenge in the session
         challenge_base64 = base64.urlsafe_b64encode(authentication_options.challenge).decode().rstrip("=")
         request.session['webauthn_challenge'] = challenge_base64
 
+        # Converting options to JSON and sending it as a response
         options_dict = json.loads(options_to_json(authentication_options))
-
-        # Logging the challenge options sent to the client
-        logger.info(f"Authentication challenge options sent: {options_dict}")
-
         return JsonResponse(options_dict)
 
 
 class AuthenticationResponseView(APIView):
+    # Allow access to any user for authentication
     permission_classes = [AllowAny]
 
     def post(self, request, *args, **kwargs):
-        logger.info("AuthenticationResponseView called")
+        # Deserialize the incoming data
         response_data = request.data
-        logger.info(f"Received authentication response: {response_data}")
-
         serializer = AuthenticationResponseSerializer(data=response_data)
+
+        # Proceed only if the serializer is valid
         if serializer.is_valid():
-            logger.info("Serializer is valid")
+            # Extract and decode the challenge stored in the session
             challenge_base64 = request.session.pop('webauthn_challenge', None)
             challenge = self._base64_urlsafe_decode(challenge_base64) if challenge_base64 else None
 
             try:
-                # Convert Base64URL to bytes and log the conversion
+                # Convert the received data into bytes for processing
                 credential_id_bytes = base64url_to_bytes(response_data['credential_id'])
                 authenticator_data_bytes = base64url_to_bytes(response_data['authenticator_data'])
                 client_data_json_bytes = base64url_to_bytes(response_data['client_data_json'])
                 signature_bytes = base64url_to_bytes(response_data['signature'])
 
-                logger.info(f"Converted credential_id to bytes: {credential_id_bytes}")
-                logger.info(f"Converted authenticator_data to bytes: {authenticator_data_bytes}")
-                logger.info(f"Converted client_data_json to bytes: {client_data_json_bytes}")
-                logger.info(f"Converted signature to bytes: {signature_bytes}")
-
-                # Retrieve stored credential and log retrieval
+                # Retrieve the stored credential using the credential ID
                 stored_credential = WebAuthnCredential.objects.get(credential_id=credential_id_bytes)
                 user = stored_credential.user
-                logger.info(f"Retrieved stored credential for user: {user.username}")
 
-                # Prepare the data for verification and log the data structure
+                # Prepare data for verification
                 response_data_for_verification = {
                     'id': bytes_to_base64url(credential_id_bytes),
                     'rawId': bytes_to_base64url(credential_id_bytes),
@@ -291,9 +249,8 @@ class AuthenticationResponseView(APIView):
                     },
                     'type': 'public-key'
                 }
-                logger.info(f"Prepared data for verification: {response_data_for_verification}")
 
-                # Verify authentication response using the dictionary and log the process
+                # Verify the authentication response
                 authentication_verification = verify_authentication_response(
                     credential=response_data_for_verification,
                     expected_challenge=challenge,
@@ -303,46 +260,39 @@ class AuthenticationResponseView(APIView):
                     credential_current_sign_count=stored_credential.sign_count,
                     require_user_verification=True,
                 )
-                logger.info(f"Verification result: {authentication_verification}")
 
-                # Update stored credential and log the update
+                # Update the stored credential's sign count
                 stored_credential.sign_count = authentication_verification.new_sign_count
                 stored_credential.save()
-                logger.info("Stored credential sign count updated")
 
-                # Log user login
+                # Log in the user and respond with success
                 login(request, user)
-                logger.info(f"User {user.username} logged in")
-
                 return JsonResponse({"status": "success"})
 
-            except WebAuthnCredential.DoesNotExist as e:
-                logger.error("Credential not found", exc_info=e)
+            except WebAuthnCredential.DoesNotExist:
+                # Handle the case where the credential does not exist
                 return JsonResponse({"status": "error", "detail": "Credential not found"}, status=404)
             except InvalidAuthenticationResponse as e:
-                logger.error("Invalid authentication response", exc_info=e)
+                # Handle invalid authentication responses
                 return JsonResponse({"status": "error", "detail": str(e)}, status=400)
             except KeyError as e:
-                logger.error("KeyError caught in AuthenticationResponseView", exc_info=e)
+                # Handle key errors in data processing
                 return JsonResponse({"status": "error", "detail": str(e)}, status=400)
             except Exception as e:
-                logger.error("Exception caught in AuthenticationResponseView", exc_info=e)
+                # Catch all other exceptions and return an error
                 return JsonResponse({"status": "error", "detail": str(e)}, status=400)
         else:
-            logger.error("Serializer errors", exc_info=True)
+            # Handle invalid serializer data
             return JsonResponse(serializer.errors, status=400)
 
     def _base64_urlsafe_decode(self, data):
-        logger.info(f"Data before padding correction: {data}")
+        # Decoding utility for base64 data
         padding = '=' * ((4 - len(data) % 4) % 4)
         data_with_padding = data + padding
-        logger.info(f"Data with padding correction: {data_with_padding}")
         try:
-            decoded_data = base64.urlsafe_b64decode(data_with_padding)
-            logger.info(f"Decoded challenge: {decoded_data}")
-            return decoded_data
+            return base64.urlsafe_b64decode(data_with_padding)
         except Exception as e:
-            logger.error(f"Error decoding Base64URL data", exc_info=e)
+            # Handle exceptions during base64 decoding
             raise e
 
 
